@@ -502,6 +502,7 @@ export async function runAgentTurn(
       },
       getToolRegistry: () => getToolRegistryForAgent(agentDef, options.sessionId),
       getConversationMessages: buildGetConversationMessages(options.sessionId, resolveAgentClient, append),
+      getEvents: () => getEventStore().getEvents(options.sessionId),
       injectAgentReminder: () => injectAgentReminder(options.sessionId, agentDef),
       rebuildCachedContext: async () => {
         const { applyDynamicContext } = await import('./dynamic-context.js')
