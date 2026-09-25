@@ -463,17 +463,23 @@ export function reorderToolMessages(messages: MessageWithId[]): void {
   }
 }
 
-export function buildContextMessagesFromEventHistory(
-  events: StoredEvent[],
-  windowId?: string,
-  options?: ContextMessageBuildOptions,
-): ContextMessage[] {
+/**
+ * Split the stored event list at the latest turn.snapshot: the snapshot
+ * payload plus the events written after it. The snapshot is a point-in-time
+ * capture of complete messages; events targeting a messageId already covered
+ * by the snapshot (only conceivable after an abort-snapshot) are dropped —
+ * the snapshot content stays authoritative and no event can be double-applied
+ * on top of it. The one exception is a `tool.result` that completes a tool
+ * call the snapshot captured without its result.
+ */
+function splitAtLatestSnapshot(events: StoredEvent[]): {
+  snapshot: SessionSnapshot
+  snapshotEvent: StoredEvent
+  laterEvents: StoredEvent[]
+} | null {
   const snapshotEvent = [...events].reverse().find((event) => event.type === 'turn.snapshot')
-  if (!snapshotEvent) {
-    return buildContextMessagesFromStoredEvents(events, windowId, options)
-  }
+  if (!snapshotEvent) return null
   const snapshot = snapshotEvent.data as SessionSnapshot
-
   // The snapshot is a point-in-time capture of complete messages. Later events
   // belong to subsequent turns and carry their own messageIds. Events targeting
   // a messageId already covered by the snapshot (only conceivable after an
@@ -507,9 +513,20 @@ export function buildContextMessagesFromEventHistory(
     const toolCallId = (event.data as { toolCallId?: string }).toolCallId
     return toolCallId !== undefined && unresolvedToolCallIds.has(toolCallId)
   })
+  return { snapshot, snapshotEvent, laterEvents }
+}
 
+export function buildContextMessagesFromEventHistory(
+  events: StoredEvent[],
+  windowId?: string,
+  options?: ContextMessageBuildOptions,
+): ContextMessage[] {
+  const split = splitAtLatestSnapshot(events)
+  if (!split) {
+    return buildContextMessagesFromStoredEvents(events, windowId, options)
+  }
   return buildContextMessagesFromStoredEvents(
-    [...snapshotMessagesToEvents(snapshot.messages, snapshotEvent.sessionId), ...laterEvents],
+    [...snapshotMessagesToEvents(split.snapshot.messages, split.snapshotEvent.sessionId), ...split.laterEvents],
     windowId,
     options,
   )
@@ -524,6 +541,21 @@ export function foldTurnEventsToSnapshotMessagesFromInitial(
   initialMessages: SnapshotMessage[],
 ): SnapshotMessage[] {
   return applyTurnEventsToSnapshotMessages(initialMessages, events)
+}
+
+/**
+ * Fold the full stored event list into snapshot messages, snapshot-aware: the
+ * latest turn.snapshot's messages seed the fold and only events written after
+ * the snapshot are applied on top. This survives cleanupOldEvents GC of
+ * pre-snapshot raw events, which a bare foldTurnEventsToSnapshotMessages does
+ * not.
+ */
+export function foldEventsToSnapshotMessages(events: StoredEvent[]): SnapshotMessage[] {
+  const split = splitAtLatestSnapshot(events)
+  if (!split) {
+    return foldTurnEventsToSnapshotMessages(events)
+  }
+  return foldTurnEventsToSnapshotMessagesFromInitial(split.laterEvents, split.snapshot.messages)
 }
 
 export function buildContextMessagesFromMessages(messages: SnapshotMessage[], windowId: string): ContextMessage[] {
